@@ -93,6 +93,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
+from typing import List, Tuple, Set, Dict, Union
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -369,7 +370,9 @@ class EncoderRNN(nn.Module):
         # input.shape = 
         embedded = self.embedding(input).view(1, 1, -1) # embeded.shape = (1, 1, hidden_size)
         output = embedded
-        output, hidden = self.gru(output, hidden)
+        output, hidden = self.gru(output, hidden) 
+        # output.shape = (1, 1, hidden_size)
+        # hidden.shape = (1, 1, hidden_size)
         return output, hidden
 
     def initHidden(self):
@@ -491,7 +494,7 @@ class AttnDecoderRNN(nn.Module):
 
     def forward(self, input, hidden, encoder_outputs):
         '''
-        input: 就decoder上一步的输出 shape = (1, 1, hidden_size)    
+        input: 就decoder上一步的输出 shape = (1, 1)    
         encoder_output: encoder输出的context向量 shape = (1, max_length, hidden_size)
 
         在标准的seq2seq with attention模型中，Encoder会输出两个重要的张量：
@@ -521,11 +524,23 @@ class AttnDecoderRNN(nn.Module):
         其中：
 
         s_{i-1} 是上一时刻的解码器隐藏状态
-        h_j 是编码器输出序列中的第j个向量（就是上一步的解码器输出）
+        h_j 是编码器输出序列中的第j个向量
+        j 取 0 ~ max_length-1 
         '''
         attn_weights = F.softmax(
             self.attn(torch.cat((embedded[0], hidden[0]), 1)), dim=1) # shape = (1, max_length)
         
+
+        # 写法2
+        # # 计算注意力分数  
+        # attn_scores = []  
+        # for j in range(encoder_outputs.size(0)):  # 遍历所有encoder输出  
+        #     # 对每个encoder隐藏状态计算注意力分数  
+        #     score = self.attn(torch.cat((hidden[0], encoder_outputs[j]), 1))  
+        #     attn_scores.append(score)  
+        
+        # # 将分数转换为概率分布  
+        # attn_weights = F.softmax(torch.cat(attn_scores), dim=1) 
         '''
         最终，attn_weights 是一个形状为 (1, max_length) 的张量，
         其中每个元素表示解码器在生成当前输出时应该关注输入序列的对应位置的概率。
@@ -536,6 +551,7 @@ class AttnDecoderRNN(nn.Module):
         # 将注意力权重应用到编码器的输出上，得到注意力加权的上下文向量。
         # bmm: 批量矩阵乘法
         '''
+        计算attn_applied, 也就是上下文向量
         这一步使用注意力权重对编码器输出进行加权求和，得到上下文向量，对应论文中的公式：
         c_i = Σ_j α_{ij}h_j  
 
@@ -548,15 +564,30 @@ class AttnDecoderRNN(nn.Module):
         embedded.shape = (1, 1, hidden_size)
         attn_applied.shape = (1, 1, hidden_size)
         '''
+
+        '''
+        以下公式的作用：解码器状态更新
+        s_i = f(s_{i-1}, y_{i-1}, c_i)  
+
+        为什么需要s_i, 实际上就是为了计算: p(yi|y1, . . . , y_{i-1}, x) = g(y_{i-1}, si, ci), , 其中 s_i = f(s_{i-1}, y_{i-1}, c_i)
+
+        # 公式：s_i = f(s_{i-1}, y_{i-1}, c_i)
+        # 其中f是一个GRU单元
+
+        # 公式：p(yi|y1,..., y_{i-1}, x) = g(y_{i-1}, si, ci)
+        # 其中g是一个线性层
+        '''
+        # 将输入信息(y_{i-1})和上下文信息(c_i)结合使解码器能同时利用局部和全局信息
         output = torch.cat((embedded[0], attn_applied[0]), 1) # shape = (1, hidden_size * 2)
-        # 过线性层
+        # 过投影层
         output = self.attn_combine(output).unsqueeze(0) # shape = (1, 1, hidden_size)
 
         output = F.relu(output)
-        output, hidden = self.gru(output, hidden) # shape = (1, 1, hidden_size)
+        # hidden.shape = (1, 1, hidden_size)
+        output, hidden = self.gru(output, hidden) # s_i = f(s_{i-1}, y_{i-1}, c_i) shape = (1, 1, hidden_size)
 
         # 使用log_softmax而不是普通softmax，这在训练时能提供更好的数值稳定性。
-        output = F.log_softmax(self.out(output[0]), dim=1) # shape = (1, output_size)
+        output = F.log_softmax(self.out(output[0]), dim=1) # shape = (1, output_size) # 先过词表投影层 （LM-Head), 再过log-softmax
         return output, hidden, attn_weights
 
     def initHidden(self):
@@ -625,7 +656,7 @@ def tensorsFromPair(pair):
 teacher_forcing_ratio = 0.5
 
 
-def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH):
+def train(input_tensor, target_tensor, encoder:EncoderRNN, decoder:AttnDecoderRNN, encoder_optimizer, decoder_optimizer, criterion, max_length=MAX_LENGTH):
     encoder_hidden = encoder.initHidden()
 
     encoder_optimizer.zero_grad()
@@ -634,12 +665,14 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
     input_length = input_tensor.size(0)
     target_length = target_tensor.size(0)
 
-    encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
+    encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device) # shape = (max_length, hidden_size)
 
     loss = 0
 
     for ei in range(input_length):
-        encoder_output, encoder_hidden = encoder(
+        # encoder_output.shape = (1, 1, hidden_size)
+        # encoder_hidden.shape = (1, 1, hidden_size)
+        encoder_output, encoder_hidden = encoder.forward(
             input_tensor[ei], encoder_hidden)
         encoder_outputs[ei] = encoder_output[0, 0]
 
@@ -652,7 +685,7 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
     if use_teacher_forcing:
         # Teacher forcing: Feed the target as the next input
         for di in range(target_length):
-            decoder_output, decoder_hidden, decoder_attention = decoder(
+            decoder_output, decoder_hidden, decoder_attention = decoder.forward(
                 decoder_input, decoder_hidden, encoder_outputs)
             loss += criterion(decoder_output, target_tensor[di])
             decoder_input = target_tensor[di]  # Teacher forcing
@@ -660,9 +693,11 @@ def train(input_tensor, target_tensor, encoder, decoder, encoder_optimizer, deco
     else:
         # Without teacher forcing: use its own predictions as the next input
         for di in range(target_length):
-            decoder_output, decoder_hidden, decoder_attention = decoder(
+            decoder_output, decoder_hidden, decoder_attention = decoder.forward(
                 decoder_input, decoder_hidden, encoder_outputs)
-            topv, topi = decoder_output.topk(1)
+            
+            # decoder_output.shape = (1, output_size)
+            topv, topi = decoder_output.topk(1) # topk函数用于返回张量中前k个最大的值及其对应的索引。
             decoder_input = topi.squeeze().detach()  # detach from history as input
 
             loss += criterion(decoder_output, target_tensor[di])
@@ -690,10 +725,25 @@ def asMinutes(s):
     return '%dm %ds' % (m, s)
 
 def timeSince(since, percent):
-    now = time.time()
-    s = now - since
-    es = s / (percent)
-    rs = es - s
+    """
+    since: time.time()
+    percent: float
+
+    计算从某个起始时间 `since` 到当前时间的时间间隔，并根据已经完成的百分比 `percent` 估算剩余时间。
+
+    时间戳是从某个特定的起始时间（通常是1970年1月1日00:00:00 UTC）到当前时间的秒数。
+
+    参数: 
+    since (float): 起始时间的时间戳。
+    percent (float): 已经完成的百分比。
+
+    返回:
+    str: 一个字符串，格式为 "已用时间 (- 剩余时间)"，其中时间以分钟为单位。
+    """
+    now = time.time() # 当前时间的时间戳(结束时间)
+    s = now - since # 开始时间
+    es = s / (percent) # 预计结束时间
+    rs = es - s # 剩余时间
     return '%s (- %s)' % (asMinutes(s), asMinutes(rs))
 
 
@@ -716,7 +766,7 @@ def trainIters(encoder, decoder, n_iters, print_every=100, plot_every=100, learn
 
     encoder_optimizer = optim.SGD(encoder.parameters(), lr=learning_rate)
     decoder_optimizer = optim.SGD(decoder.parameters(), lr=learning_rate)
-    training_pairs = [tensorsFromPair(random.choice(pairs))
+    training_pairs:List[Tuple[torch.LongTensor]] = [tensorsFromPair(random.choice(pairs))
                       for i in range(n_iters)]
     criterion = nn.NLLLoss()
 
@@ -741,7 +791,7 @@ def trainIters(encoder, decoder, n_iters, print_every=100, plot_every=100, learn
             plot_losses.append(plot_loss_avg)
             plot_loss_total = 0
 
-    #showPlot(plot_losses)
+    # showPlot(plot_losses)
 
 
 # Plotting results
@@ -760,8 +810,15 @@ def trainIters(encoder, decoder, n_iters, print_every=100, plot_every=100, learn
 # predicts the EOS token we stop there. We also store the decoder's
 # attention outputs for display later.
 # 
+'''
+#评估大多与培训相同，但没有目标所以
+#我们只需为每个步骤将解码器的预测反馈给自身。
+#每次它预测一个单词时，我们都会将其添加到输出字符串中，如果它
+#预测我们停在那里的EOS代币。我们还存储解码器的
+#注意输出以供稍后显示。
+'''
 
-def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
+def evaluate(encoder: EncoderRNN, decoder: AttnDecoderRNN, sentence, max_length=MAX_LENGTH):
     with torch.no_grad():
         input_tensor = tensorFromSentence(input_lang, sentence)
         input_length = input_tensor.size()[0]
@@ -770,11 +827,12 @@ def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
         encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
 
         for ei in range(input_length):
+            # encoder_output.shape = (1, 1, hidden_size)
             encoder_output, encoder_hidden = encoder(input_tensor[ei],
                                                      encoder_hidden)
             encoder_outputs[ei] += encoder_output[0, 0]
 
-        decoder_input = torch.tensor([[SOS_token]], device=device)  # SOS
+        decoder_input = torch.tensor([[SOS_token]], device=device)  # SOS shape = (1, 1)
 
         decoder_hidden = encoder_hidden
 
@@ -782,9 +840,10 @@ def evaluate(encoder, decoder, sentence, max_length=MAX_LENGTH):
         decoder_attentions = torch.zeros(max_length, max_length)
 
         for di in range(max_length):
+            # decoder_attention.shape = (1, max_length)
             decoder_output, decoder_hidden, decoder_attention = decoder(
                 decoder_input, decoder_hidden, encoder_outputs)
-            decoder_attentions[di] = decoder_attention.data
+            decoder_attentions[di] = decoder_attention.data # tensor.data 属性用于获取张量的数据部分，而不包括其梯度信息。
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == EOS_token:
                 decoded_words.append('<EOS>')
