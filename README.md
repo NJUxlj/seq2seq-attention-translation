@@ -9,6 +9,7 @@ this file reproduce the seq2seq attention brought up by this paper [NEURAL MACHI
 # Run
 ```shell
 pip install torch
+pip install numpy
 python seq2seq_translation.py
 ```
 
