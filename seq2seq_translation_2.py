@@ -489,7 +489,7 @@ def evaluate(encoder:EncoderRNN, decoder:AttnDecoderRNN, sentence, max_length=MA
     这段代码本质上在对一段输入的句子进行推理
     '''
     with torch.no_grad():
-        input_tensor =  tensorFromSentence(sentence)
+        input_tensor =  tensorFromSentence(input_lang,sentence)
         input_length= input_tensor.size(0)
         encoder_hidden = encoder.initHidden()
 
@@ -526,7 +526,7 @@ def evaluate(encoder:EncoderRNN, decoder:AttnDecoderRNN, sentence, max_length=MA
 
 def evaluateRandomly(encoder, decoder, n=10):
     for i in range(n):
-        pair = np.random.choice(pairs)
+        pair = random.choice(pairs)
         print('>', pair[0])
         print('=', pair[1])
         output_words, attentions = evaluate(encoder, decoder, pair[0])
