@@ -2,7 +2,10 @@
 this file reproduce the seq2seq attention brought up by this paper [NEURAL MACHINE TRANSLATION BY JOINTLY LEARNING TO ALIGN AND TRANSLATE](https://peerj.com/articles/cs-2607/code.zip)
 
 
+# File
+`seq2seq_translation.py` is a implementation of the Soft-Attention with a standard encoder-decoder model implemented using the GRU
 
+`seq2seq_translation.py` is a modified the version of soft-attention with a slightly different implementation and a multi-layer GRU
 # Run
 ```shell
 pip install torch
