@@ -510,7 +510,7 @@ def evaluate(encoder:EncoderRNN, decoder:AttnDecoderRNN, sentence, max_length=MA
         decoded_words = []
 
         for di in range(max_length): # 这里我们方便起见，就指定输出长度为max_length
-            decoder_output, decoder_hidden, decoder_attention= decoder.forward()
+            decoder_output, decoder_hidden, decoder_attention= decoder.forward(decoder_input, decoder_hidden, encoder_outputs)
             decoder_attentions[di] = decoder_attention.data
 
             topv, topi= decoder_output.data.topk(1)
